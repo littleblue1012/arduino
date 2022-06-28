@@ -1,9 +1,11 @@
 // I2Cdev and MPU6050 must be installed as libraries, or else the .cpp/.h files
 // for both classes must be in the include path of your project
 #include "I2Cdev.h"
+#include <WiFi.h>
+
 
 #include "MPU6050_6Axis_MotionApps_V6_12.h"
-//#include "MPU6050.h" // not necessary if using MotionApps include file
+#include "MPU6050.h" // not necessary if using MotionApps include file
 
 // Arduino Wire library is required if I2Cdev I2CDEV_ARDUINO_WIRE implementation
 // is used in I2Cdev.h
@@ -27,6 +29,27 @@ MPU6050 mpu;
 #define LED_PIN 13 // (Arduino is 13, Teensy is 11, Teensy++ is 6)
 bool blinkState = false;
 
+const char* ssid = "iPhone12 Tiffany";   //要改
+const char* password = "26302630";  //要改
+
+// Set web server port number to 80
+WiFiServer server(80);
+
+// Variable to store the HTTP request
+String header;
+
+// Auxiliar variables to store the current output state
+String fanState = "off";
+
+
+// Current time
+unsigned long currentTime = millis();
+// Previous time
+unsigned long previousTime = 0; 
+// Define timeout time in milliseconds (example: 2000ms = 2s)
+const long timeoutTime = 2000;
+
+
 // MPU control/status vars
 bool dmpReady = false;  // set true if DMP init was successful
 uint8_t mpuIntStatus;   // holds actual interrupt status byte from MPU
@@ -34,16 +57,19 @@ uint8_t devStatus;      // return status after each device operation (0 = succes
 uint16_t packetSize;    // expected DMP packet size (default is 42 bytes)
 uint16_t fifoCount;     // count of all bytes currently in FIFO
 uint8_t fifoBuffer[64]; // FIFO storage buffer
+ 
+
 
 // orientation/motion vars
 Quaternion q;           // [w, x, y, z]         quaternion container
-VectorInt16 aa;         // [x, y, z]            accel sensor measurements
-VectorInt16 gy;         // [x, y, z]            gyro sensor measurements
-VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measurements
-VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
-VectorFloat gravity;    // [x, y, z]            gravity vector
+//VectorInt16 aa;         // [x, y, z]            accel sensor measurements
+//VectorInt16 gy;         // [x, y, z]            gyro sensor measurements
+//VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measurements
+//VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
+//VectorFloat gravity;    // [x, y, z]            gravity vector
 float euler[3];         // [psi, theta, phi]    Euler angle container
-float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+float ypr[3]; // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+
 
 // packet structure for InvenSense teapot demo
 uint8_t teapotPacket[14] = { '$', 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, '\r', '\n' };
@@ -57,9 +83,9 @@ void setup() {
   // join I2C bus (I2Cdev library doesn't do this automatically)
 #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
   Wire.begin();
-  Wire.setClock(35000); // 400kHz I2C clock. Comment this line if having compilation difficulties
+  Wire.setClock(40000); // 400kHz I2C clock. Comment this line if having compilation difficulties
 #elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
-  Fastwire::setup(400, true);
+  Fastwire::setup(40, true);
 #endif
 
   // initialize serial communication
@@ -74,7 +100,24 @@ void setup() {
   // 38400 or slower in these cases, or use some kind of external separate
   // crystal solution for the UART timer.
 
-  // initialize device
+
+  // Connect to Wi-Fi network with SSID and password
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  // Print local IP address and start web server
+  Serial.println("");
+  Serial.println("WiFi connected.");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+  server.begin();
+
+  
+  // MPU6050 initialize device
   Serial.println(F("Initializing I2C devices..."));
   mpu.initialize();
   pinMode(INTERRUPT_PIN, INPUT);
@@ -134,8 +177,8 @@ void setup() {
     Serial.println(F(")"));
   }
 
-  // configure LED for output
-  pinMode(LED_PIN, OUTPUT);
+   // configure LED for output
+   pinMode(LED_PIN, OUTPUT);
 }
 
 void loop() {
@@ -147,18 +190,125 @@ void loop() {
 #ifdef OUTPUT_READABLE_QUATERNION
     // display quaternion values in easy matrix form: w x y z
     mpu.dmpGetQuaternion(&q, fifoBuffer);
-    Serial.print("quat\t");
+    Serial.print("旋轉速度\t");
     Serial.print(q.w);
     Serial.print("\t");
-    Serial.print(q.x);
+    Serial.print(q.x);   //想用這個判斷是否轉動
     Serial.print("\t");
     Serial.print(q.y);
     Serial.print("\t");
     Serial.println(q.z);
+  
+   
+   if ((-0.3 <= q.x) && (q.x<= -0.01) ){
+     Serial.println("open");  
+     fanState = "on";        
+   }else if ((0.01 <= q.x) && (q.x <= 0.3)){
+     Serial.println("open");  
+     fanState = "on";
+   }else {
+    Serial.println("close");
+     fanState = "off";
+   }
+    
+#endif
+
+#ifdef OUTPUT_TEAPOT_OSC
+#ifndef OUTPUT_READABLE_QUATERNION
+    // display quaternion values in easy matrix form: w x y z
+    mpu.dmpGetQuaternion(&q, fifoBuffer);
+#endif
+    // Send OSC message
+    OSCMessage msg("/imuquat");
+    msg.add((float)q.w);
+    msg.add((float)q.x);
+    msg.add((float)q.y);
+    msg.add((float)q.z);
+   
+    Udp.beginPacket(outIp, outPort);
+    msg.send(Udp);
+    Udp.endPacket(); 
+    msg.empty(); 
+    
 #endif
 
 // blink LED to indicate activity
     blinkState = !blinkState;
     digitalWrite(LED_PIN, blinkState);
   }
+   
+   //WIFI Part
+    WiFiClient client = server.available();
+   
+    if (client) {                             // If a new client connects,
+    currentTime = millis();
+    previousTime = currentTime;
+    Serial.println("New Client.");          // print a message out in the serial port
+    String currentLine = "";                // make a String to hold incoming data from the client
+    while (client.connected() && currentTime - previousTime <= timeoutTime) {  // loop while the client's connected
+      currentTime = millis();
+      if (client.available()) {             // if there's bytes to read from the client,
+        char c = client.read();             // read a byte, then
+        Serial.write(c);                    // print it out the serial monitor
+        header += c;
+        if (c == '\n') {                    // if the byte is a newline character
+          // if the current line is blank, you got two newline characters in a row.
+          // that's the end of the client HTTP request, so send a response:
+          if (currentLine.length() == 0) {
+            // HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK)
+            // and a content-type so the client knows what's coming, then a blank line:
+            client.println("HTTP/1.1 200 OK");
+            client.println("Content-type:text/html");
+            client.println("Connection: close");
+            client.println();
+   
+
+            // Display the HTML web page
+            client.println("<!DOCTYPE html><html>");
+            client.println("<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+            client.println("<link rel=\"icon\" href=\"data:,\">");
+            // CSS to style the on/off buttons 
+            // Feel free to change the background-color and font-size attributes to fit your preferences
+            client.println("<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}");
+            client.println(".button { background-color: #4CAF50; border: none; color: white; padding: 16px 40px;");
+            client.println("text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}");
+            client.println(".button2 {background-color: #555555;}</style></head>");
+            
+            // Web Page Heading
+            client.println("<body><h1>ESP32 Web Server Final Project</h1>");
+            
+            // Display current state, and ON/OFF buttons for fan  
+            client.println("<p>Fan state " + fanState + "</p>");
+            // If the fanState is off, it displays the off button       
+            if (fanState=="on") {
+              client.println("<p><a href=\"/2/on\"><button class=\"button\">ON</button></a></p>");
+            } 
+            else{
+              client.println("<p><a href=\"/2/off\"><button class=\"button button2\">OFF</button></a></p>");
+            } 
+        
+            
+            client.println("</body></html>");
+            
+            // The HTTP response ends with another blank line
+            client.println();
+            // Break out of the while loop
+            break;
+          } else { // if you got a newline, then clear currentLine
+            currentLine = "";
+          }
+        } else if (c != '\r') {  // if you got anything else but a carriage return character,
+          currentLine += c;      // add it to the end of the currentLine
+        }
+      }
+    }
+    // Clear the header variable
+    header = "";
+    // Close the connection
+    client.stop();
+    Serial.println("Client disconnected.");
+    Serial.println("");
+  }
+
+   
 }
